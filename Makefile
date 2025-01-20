@@ -158,3 +158,13 @@ run-test:
 serve-docs:
 	docker run ${MKDOCS_RUN_ARGS} --rm -it -p 8000:8000 -v ${CURRENT_DIR}:/docs ${MKDOCS_DOCKER_IMAGE} serve -a 0.0.0.0:8000
 
+.PHONY: local-image-test
+local-image-test:
+	APPLICATIONS_API=http://example.com/applications_api \
+	ARGOCD_GRPC_WEB=true \
+	ARGOCD_SERVER=http://example.com \
+	ARGOCD_INSECURE=true \
+	ARGOCD_PLAINTEXT=false \
+	ARGOCD_TOKEN=your-token \
+	IMAGE_UPDATER_LOGLEVEL=debug \
+	./dist/argocd-image-updater run --webhook-port 6969

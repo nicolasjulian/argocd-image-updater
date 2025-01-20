@@ -76,31 +76,6 @@ func newRunCommand() *cobra.Command {
 					commitMessageTpl = string(tpl)
 				}
 			}
-			if cfg.WebhookPort > 0 {
-				log.Infof("Starting webhook server on TCP port=%d", cfg.WebhookPort)
-				whErrCh := webhook.StartRegistryHookServer(cfg.WebhookPort)
-				go func() {
-					select {
-					case err := <-whErrCh:
-						if err != nil {
-							log.Errorf("Webhook server error: %v", err)
-						}
-					case event := <-webhook.GetWebhookEventChan():
-						log.Infof("Received webhook event: registry=%s, image=%s, tag=%s",
-							event.RegistryPrefix, event.ImageName, event.TagName)
-						result, err := runImageUpdater(cfg, false)
-						if err != nil {
-							log.Errorf("Error processing webhook: %v", err)
-						} else {
-							log.Infof("Webhook processing results: applications=%d images_considered=%d images_updated=%d errors=%d",
-								result.NumApplicationsProcessed,
-								result.NumImagesConsidered,
-								result.NumImagesUpdated,
-								result.NumErrors)
-						}
-					}
-				}()
-			}
 
 			if commitMessageTpl == "" {
 				log.Infof("Using default Git commit messages")
@@ -297,6 +272,7 @@ func newRunCommand() *cobra.Command {
 	runCmd.Flags().BoolVar(&cfg.GitCommitSignOff, "git-commit-sign-off", env.GetBoolVal("GIT_COMMIT_SIGN_OFF", false), "Whether to sign-off git commits")
 	runCmd.Flags().StringVar(&commitMessagePath, "git-commit-message-path", defaultCommitTemplatePath, "Path to a template to use for Git commit messages")
 	runCmd.Flags().BoolVar(&cfg.DisableKubeEvents, "disable-kube-events", env.GetBoolVal("IMAGE_UPDATER_KUBE_EVENTS", false), "Disable kubernetes events")
+	runCmd.Flags().IntVar(&cfg.WebhookPort, "webhook-port", 0, "port to start registry webhook server on, 0 to disable")
 
 	return runCmd
 }
