@@ -15,6 +15,7 @@ import (
 	"github.com/argoproj-labs/argocd-image-updater/pkg/health"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/metrics"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/version"
+	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/env"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/log"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/registry"
@@ -75,6 +76,31 @@ func newRunCommand() *cobra.Command {
 					commitMessageTpl = string(tpl)
 				}
 			}
+			if cfg.WebhookPort > 0 {
+				log.Infof("Starting webhook server on TCP port=%d", cfg.WebhookPort)
+				whErrCh := webhook.StartRegistryHookServer(cfg.WebhookPort)
+				go func() {
+					select {
+					case err := <-whErrCh:
+						if err != nil {
+							log.Errorf("Webhook server error: %v", err)
+						}
+					case event := <-webhook.GetWebhookEventChan():
+						log.Infof("Received webhook event: registry=%s, image=%s, tag=%s",
+							event.RegistryPrefix, event.ImageName, event.TagName)
+						result, err := runImageUpdater(cfg, false)
+						if err != nil {
+							log.Errorf("Error processing webhook: %v", err)
+						} else {
+							log.Infof("Webhook processing results: applications=%d images_considered=%d images_updated=%d errors=%d",
+								result.NumApplicationsProcessed,
+								result.NumImagesConsidered,
+								result.NumImagesUpdated,
+								result.NumErrors)
+						}
+					}
+				}()
+			}
 
 			if commitMessageTpl == "" {
 				log.Infof("Using default Git commit messages")
@@ -101,6 +127,32 @@ func newRunCommand() *cobra.Command {
 						return nil
 					}
 				}
+			}
+
+			if cfg.WebhookPort > 0 {
+				log.Infof("Starting webhook server on TCP port=%d", cfg.WebhookPort)
+				whErrCh := webhook.StartRegistryHookServer(cfg.WebhookPort)
+				go func() {
+					select {
+					case err := <-whErrCh:
+						if err != nil {
+							log.Errorf("Webhook server error: %v", err)
+						}
+					case event := <-webhook.GetWebhookEventChan():
+						log.Infof("Received webhook event: registry=%s, image=%s, tag=%s",
+							event.RegistryPrefix, event.ImageName, event.TagName)
+						result, err := runImageUpdater(cfg, false)
+						if err != nil {
+							log.Errorf("Error processing webhook: %v", err)
+						} else {
+							log.Infof("Webhook processing results: applications=%d images_considered=%d images_updated=%d errors=%d",
+								result.NumApplicationsProcessed,
+								result.NumImagesConsidered,
+								result.NumImagesUpdated,
+								result.NumErrors)
+						}
+					}
+				}()
 			}
 
 			if cfg.CheckInterval > 0 && cfg.CheckInterval < 60*time.Second {

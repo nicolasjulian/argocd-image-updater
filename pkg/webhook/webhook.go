@@ -4,33 +4,18 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
+	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook/container-registry"
+	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook/types"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/log"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/registry"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/tag"
 )
 
-type WebhookEvent struct {
-	RegistryPrefix string
-	RepoName       string
-	ImageName      string
-	TagName        string
-	CreatedAt      time.Time
-	Digest         string
-}
+var webhookEventCh = make(chan types.WebhookEvent)
 
-type Event string
-
-type RegistryWebhook interface {
-	New(secret string) (RegistryWebhook, error)
-	Parse(r *http.Request, events ...Event) (*WebhookEvent, error)
-}
-
-var webhookEventCh (chan WebhookEvent) = make(chan WebhookEvent)
-
-// GetWebhookEventChan return a chan for WebhookEvent
-func GetWebhookEventChan() chan WebhookEvent {
+// GetWebhookEventChan returns a chan for WebhookEvent
+func GetWebhookEventChan() chan types.WebhookEvent {
 	return webhookEventCh
 }
 
@@ -81,7 +66,7 @@ func getTagMetadata(regPrefix string, imageName string, tagStr string) (*tag.Tag
 		return nil, err
 	}
 
-	manifest, err := regClient.GetManifest(nameInRegistry, tagStr)
+	manifest, err := regClient.ManifestForTag(tagStr)
 	if err != nil {
 		log.Errorf("Could not get manifest for %s:%s - %v", nameInRegistry, tagStr, err)
 		return nil, err
@@ -106,10 +91,14 @@ func getWebhookSecretByPrefix(regPrefix string) string {
 }
 
 func webhookHandler(w http.ResponseWriter, r *http.Request) {
-	var webhookEv *WebhookEvent
 	var err error
+	var webhookEvent *types.WebhookEvent
 
 	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 {
+		http.Error(w, "Invalid webhook path", http.StatusBadRequest)
+		return
+	}
 	regPrefix := parts[3]
 	hookSecret := getWebhookSecretByPrefix(regPrefix)
 
@@ -117,13 +106,29 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("X-Harbor-Event-Id") != "" {
 		webhookID := r.Header.Get("X-Harbor-Event-Id")
 		log.Debugf("Callback from Harbor, X-Harbor-Event-Id=%s", webhookID)
-		harborHook := NewHarborWebhook(hookSecret)
-		webhookEv, err = harborHook.Parse(r)
+		harborHook := containerregistry.NewHarborWebhook(hookSecret)
+		webhookEvent, err = harborHook.Parse(r)
 		if err != nil {
 			log.Errorf("Could not parse Harbor payload %v", err)
 			http.Error(w, "Could not parse Harbor payload", http.StatusBadRequest)
 			return
 		}
+
+		// Get tag metadata
+		tagInfo, err := getTagMetadata(regPrefix, webhookEvent.ImageName, webhookEvent.TagName)
+		if err != nil {
+			log.Errorf("Could not get tag metadata: %v", err)
+			http.Error(w, "Could not get tag metadata", http.StatusInternalServerError)
+			return
+		}
+
+		// Update webhook event with metadata
+		webhookEvent.CreatedAt = tagInfo.CreatedAt
+		webhookEvent.Digest = tagInfo.EncodedDigest()
+		webhookEvent.RegistryPrefix = regPrefix
+
+		// Send the event to the channel
+		webhookEventCh <- *webhookEvent
 	} else {
 		log.Debugf("Ignoring unknown webhook event")
 		http.Error(w, "Unknown webhook event", http.StatusBadRequest)
@@ -140,6 +145,6 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Process the webhook event
-	// ...
+	// Return success
+	w.WriteHeader(http.StatusOK)
 }

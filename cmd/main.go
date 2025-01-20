@@ -40,6 +40,7 @@ type ImageUpdaterConfig struct {
 	HealthPort             int
 	MetricsPort            int
 	RegistriesConf         string
+	WebhookPort            int
 	AppNamePatterns        []string
 	AppLabel               string
 	GitCommitUser          string

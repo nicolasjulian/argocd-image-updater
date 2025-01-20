@@ -87,7 +87,7 @@ type RegistryEndpoint struct {
 	Limiter        ratelimit.Limiter
 	IsDefault      bool
 	lock           sync.RWMutex
-	HookSecret     string
+	HookSecret     string // Added field for webhook secret
 	limit          int
 }
 
@@ -106,6 +106,7 @@ var registryTweaks map[string]*RegistryEndpoint = map[string]*RegistryEndpoint{
 		Cache:          cache.NewMemCache(),
 		Limiter:        ratelimit.New(RateLimitDefault),
 		IsDefault:      true,
+		HookSecret:     "", // Initialize empty hook secret for Docker Hub
 	},
 }
 
@@ -178,7 +179,7 @@ func AddRegistryEndpoint(ep *RegistryEndpoint) error {
 // registries.
 func inferRegistryEndpointFromPrefix(prefix string) *RegistryEndpoint {
 	apiURL := "https://" + prefix
-	return NewRegistryEndpoint(prefix, prefix, apiURL, "", "", false, TagListSortUnsorted, 20, 0)
+	return NewRegistryEndpoint(prefix, prefix, apiURL, "", "", false, TagListSortUnsorted, 20, 0, "")
 }
 
 // GetRegistryEndpoint retrieves the endpoint information for the given prefix
