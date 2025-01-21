@@ -160,11 +160,11 @@ serve-docs:
 
 .PHONY: local-image-test
 local-image-test:
-	APPLICATIONS_API=http://example.com/applications_api \
+	APPLICATIONS_API=argocd \
 	ARGOCD_GRPC_WEB=true \
-	ARGOCD_SERVER=http://example.com \
-	ARGOCD_INSECURE=true \
+	ARGOCD_SERVER=control-plane.nicolas.my.id \
+	ARGOCD_INSECURE=false \
 	ARGOCD_PLAINTEXT=false \
-	ARGOCD_TOKEN=your-token \
+	ARGOCD_TOKEN=$(ARGOCD_TOKEN) \
 	IMAGE_UPDATER_LOGLEVEL=debug \
 	./dist/argocd-image-updater run --webhook-port 6969

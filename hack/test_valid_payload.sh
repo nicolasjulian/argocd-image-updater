@@ -9,13 +9,13 @@ curl -X POST \
     "event_data": {
       "resources": [
         {
-          "tag": "v1.0.0",
+          "tag": "v100",
           "digest": "sha256:12345abcdef67890"
         }
       ],
       "repository": {
-        "name": "my-app",
-        "repo_full_name": "my-project/my-app",
+        "name": "lscr.io/linuxserver/chromium",
+        "repo_full_name": "lscr.io/linuxserver",
         "repo_type": "private"
       }
     }
