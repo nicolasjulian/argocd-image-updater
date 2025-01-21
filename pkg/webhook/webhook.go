@@ -1,15 +1,18 @@
 package webhook
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
 	containerregistry "github.com/argoproj-labs/argocd-image-updater/pkg/webhook/container-registry"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook/types"
+	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/env"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/log"
 )
 
 var webhookEventCh = make(chan types.WebhookEvent)
+var ErrInvalidSecret = errors.New("invalid secret")
 
 func GetWebhookEventChan() chan types.WebhookEvent {
 	return webhookEventCh
@@ -32,12 +35,18 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check for Harbor webhook
-	if r.Header.Get("X-Harbor-Event-Id") != "" {
-		harborHook := containerregistry.NewHarbor("")
+	if r.Header.Get("authorization") != "" {
+		harborHook := containerregistry.NewHarbor(env.GetStringVal("WEBHOOK_HARBOR_SECRET", ""))
 		event, err := harborHook.Parse(r)
 		if err != nil {
-			log.Errorf("Error parsing Harbor webhook: %v", err)
-			w.WriteHeader(http.StatusBadRequest)
+			if err == ErrInvalidSecret {
+				log.Errorf("Invalid Harbor webhook secret: %v", err)
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte("Invalid credentials"))
+			} else {
+				log.Errorf("Error parsing Harbor webhook: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+			}
 			return
 		}
 
@@ -45,7 +54,10 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 		webhookEventCh <- *event
 		w.WriteHeader(http.StatusOK)
 		return
+	} else {
+		log.Errorf("Authorization header not found")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte("Authentication required"))
+		return
 	}
-
-	w.WriteHeader(http.StatusBadRequest)
 }

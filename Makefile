@@ -167,4 +167,5 @@ local-image-test:
 	ARGOCD_PLAINTEXT=false \
 	ARGOCD_TOKEN=$(ARGOCD_TOKEN) \
 	IMAGE_UPDATER_LOGLEVEL=debug \
+	WEBHOOK_HARBOR_SECRET=029830ujsnkhs9jeoajsdiasodojius98qwejowqueo9wej \
 	./dist/argocd-image-updater run --webhook-port 6969
