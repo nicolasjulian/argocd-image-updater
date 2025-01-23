@@ -166,6 +166,6 @@ local-image-test:
 	ARGOCD_INSECURE=false \
 	ARGOCD_PLAINTEXT=false \
 	ARGOCD_TOKEN=$(ARGOCD_TOKEN) \
-	IMAGE_UPDATER_LOGLEVEL=debug \
+	IMAGE_UPDATER_LOGLEVEL=trace \
 	WEBHOOK_HARBOR_SECRET=029830ujsnkhs9jeoajsdiasodojius98qwejowqueo9wej \
-	./dist/argocd-image-updater run --webhook-port 6969 --registries-conf-path /Users/user/registries.conf
+	./dist/argocd-image-updater run --webhook-port 6969 --registries-conf-path /Users/user/registries.conf --interval=60m0s

@@ -3,12 +3,12 @@ package containerregistry
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook/types"
-	"github.com/sirupsen/logrus"
+	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/log"
 )
 
 // Harbor implements webhook handler for Harbor registry
@@ -54,13 +54,13 @@ func (h *Harbor) Parse(r *http.Request) (*types.WebhookEvent, error) {
 	}
 
 	// Read and decode the request body
-	body, err := ioutil.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read request body: %v", err)
 	}
 	defer r.Body.Close()
 
-	logrus.Debugf("Received payload: %s", string(body))
+	log.Debugf("Received payload: %s", string(body))
 
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("failed to decode Harbor webhook payload: %v", err)

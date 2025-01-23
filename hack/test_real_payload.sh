@@ -2,7 +2,7 @@ curl -X POST \
   http://localhost:6969/api/webhook/harbor \
   -H 'accept-encoding: gzip' \
   -H 'content-type: application/json' \
-  -H 'authorization: thsiispassowrdauthere' \
+  -H 'authorization: 029830ujsnkhs9jeoajsdiasodojius98qwejowqueo9wej' \
   -H 'content-length: 376' \
   -H 'user-agent: Go-http-client/1.1' \
   -H "X-Harbor-Event-Id: 12345-67890" \
