@@ -12,8 +12,10 @@ import (
 	"golang.org/x/exp/slices"
 
 	"github.com/argoproj-labs/argocd-image-updater/ext/git"
+	"github.com/argoproj-labs/argocd-image-updater/pkg/config"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/common"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/kube"
+	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook/types"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/image"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/log"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/registry"
@@ -766,4 +768,108 @@ func commitChanges(app *v1alpha1.Application, wbc *WriteBackConfig, changeList [
 		return fmt.Errorf("unknown write back method set: %d", wbc.Method)
 	}
 	return nil
+}
+
+// Application represents an Argo CD application
+type Application struct {
+	Namespace string
+	Name      string
+	// Add other relevant fields here
+}
+
+// runImageUpdaterForSpecificImage updates the image of applications based on the webhook event
+func runImageUpdaterForSpecificImage(cfg *UpdateConfiguration, event types.WebhookEvent) (*ImageUpdaterResult, error) {
+    result := &ImageUpdaterResult{}
+
+    // Fetch the list of applications
+    apps, err := getApplications(cfg)
+    if err != nil {
+        return result, fmt.Errorf("failed to get applications: %v", err)
+    }
+
+    // Iterate over the applications and update only those that use the specific image
+    for _, app := range apps {
+        if usesImage(app, event.ImageName) {
+            log.Infof("Processing application %s/%s", app.Namespace, app.Name)
+            err := updateApplicationImage(cfg, app, event.ImageName, event.TagName)
+            if err != nil {
+                log.Errorf("Failed to update application %s/%s: %v", app.Namespace, app.Name, err)
+                result.NumErrors++
+            } else {
+                result.NumImagesUpdated++
+            }
+            result.NumApplicationsProcessed++
+        }
+    }
+
+    return result, nil
+}
+
+func getApplications(cfg *UpdateConfiguration) ([]Application, error) {
+    client, err := cfg.ArgoClient.NewApplicationClient()
+    if err != nil {
+        return nil, fmt.Errorf("failed to create Argo CD application client: %v", err)
+    }
+
+    appList, err := client.List(context.Background(), &application.ApplicationQuery{})
+    if err != nil {
+        return nil, fmt.Errorf("failed to list Argo CD applications: %v", err)
+    }
+
+    var apps []Application
+    for _, app := range appList.Items {
+        apps = append(apps, Application{
+            Namespace: app.Namespace,
+            Name:      app.Name,
+            Spec:      app.Spec,
+        })
+    }
+
+    return apps, nil
+}
+
+// usesImage checks if the application uses the specified image
+func usesImage(app Application, imageName string) bool {
+    for _, source := range app.Spec.Source.Kustomize.Images {
+        if strings.Contains(source.Name, imageName) {
+            return true
+        }
+    }
+    for _, param := range app.Spec.Source.Helm.Parameters {
+        if strings.Contains(param.Value, imageName) {
+            return true
+        }
+    }
+    return false
+}
+
+// updateApplicationImage updates the application's image to the new tag
+func updateApplicationImage(cfg *UpdateConfiguration, app Application, imageName, tagName string) error {
+    client, err := cfg.ArgoClient.NewApplicationClient()
+    if err != nil {
+        return fmt.Errorf("failed to create Argo CD application client: %v", err)
+    }
+
+    // Update the image in the application's spec
+    for i, source := range app.Spec.Source.Kustomize.Images {
+        if strings.Contains(source.Name, imageName) {
+            app.Spec.Source.Kustomize.Images[i].NewName = imageName
+            app.Spec.Source.Kustomize.Images[i].NewTag = tagName
+        }
+    }
+    for i, param := range app.Spec.Source.Helm.Parameters {
+        if strings.Contains(param.Value, imageName) {
+            app.Spec.Source.Helm.Parameters[i].Value = fmt.Sprintf("%s:%s", imageName, tagName)
+        }
+    }
+
+    _, err = client.UpdateSpec(context.Background(), &application.ApplicationUpdateSpecRequest{
+        Name: &app.Name,
+        Spec: &app.Spec,
+    })
+    if err != nil {
+        return fmt.Errorf("failed to update Argo CD application spec: %v", err)
+    }
+
+    return nil
 }

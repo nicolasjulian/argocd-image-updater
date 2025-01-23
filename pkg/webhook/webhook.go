@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	containerregistry "github.com/argoproj-labs/argocd-image-updater/pkg/webhook/container-registry"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook/types"
@@ -36,7 +37,8 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Check for Harbor webhook
 	if r.Header.Get("authorization") != "" {
-		harborHook := containerregistry.NewHarbor(env.GetStringVal("WEBHOOK_HARBOR_SECRET", ""))
+		harborSecret := env.GetStringVal("WEBHOOK_HARBOR_SECRET", "")
+		harborHook := containerregistry.NewHarbor(harborSecret)
 		event, err := harborHook.Parse(r)
 		if err != nil {
 			if err == ErrInvalidSecret {
@@ -49,6 +51,18 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+
+		 // Extract registry prefix from the URL path
+        parts := strings.Split(r.URL.Path, "/")
+        if len(parts) < 4 {
+            log.Errorf("Invalid URL path: %s", r.URL.Path)
+            w.WriteHeader(http.StatusBadRequest)
+            return
+        }
+        regPrefix := parts[3]
+        event.RegistryPrefix = regPrefix
+
+        log.Infof("Received webhook event: registry=%s, image=%s, tag=%s", regPrefix, event.ImageName, event.TagName)
 
 		// Send the event to the channel for processing
 		webhookEventCh <- *event
