@@ -21,8 +21,8 @@ import (
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/log"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/registry"
 	"github.com/argoproj/argo-cd/v2/pkg/apiclient/application"
-
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+
 	"github.com/argoproj/argo-cd/v2/reposerver/askpass"
 
 	"github.com/spf13/cobra"
@@ -37,6 +37,7 @@ type ImageUpdaterResult struct {
 	NumImagesConsidered      int
 	NumSkipped               int
 	NumErrors                int
+	UpdatedApplications      []string
 }
 
 type Application struct {
@@ -426,26 +427,35 @@ func warmupImageCache(cfg *ImageUpdaterConfig) error {
 }
 
 func (cfg *ImageUpdaterConfig) RunImageUpdaterForSpecificImage(event types.WebhookEvent) (*ImageUpdaterResult, error) {
-	result := &ImageUpdaterResult{}
+	result := &ImageUpdaterResult{
+		UpdatedApplications: make([]string, 0),
+	}
 
-	// Fetch the list of applications
+	// Validate webhook event
+	if event.ImageName == "" || event.RegistryPrefix == "" {
+		return result, fmt.Errorf("invalid webhook event: missing image or registry")
+	}
+
+	// Get all applications
 	apps, err := getApplications(cfg)
 	if err != nil {
 		return result, fmt.Errorf("failed to get applications: %v", err)
 	}
 
-	// Iterate over the applications and update only those that use the specific image
+	// Check each application for image match
 	for _, app := range apps {
+		// Use usesImage to check if app uses this image
 		if usesImage(app, event.ImageName) {
-			log.Infof("Processing application %s/%s", app.Namespace, app.Name)
+			log.Debugf("Found matching application: %s", app.Name)
+
+			// Update the application with new image
 			err := updateApplicationImage(cfg, app, event.ImageName, event.TagName)
 			if err != nil {
-				log.Errorf("Failed to update application %s/%s: %v", app.Namespace, app.Name, err)
-				result.NumErrors++
-			} else {
-				result.NumImagesUpdated++
+				log.Errorf("Failed to update application %s: %v", app.Name, err)
+				continue
 			}
-			result.NumApplicationsProcessed++
+
+			result.UpdatedApplications = append(result.UpdatedApplications, app.Name)
 		}
 	}
 
@@ -471,18 +481,37 @@ func getApplications(cfg *ImageUpdaterConfig) ([]Application, error) {
 }
 
 func usesImage(app Application, imageName string) bool {
-	for _, source := range app.Spec.Source.Kustomize.Images {
-		if source.Match(v1alpha1.KustomizeImage(imageName)) {
-			return true
+	if app.Spec.Source == nil {
+		return false
+	}
+
+	// Since we can't directly check images, we'll look for the image name in kustomize and helm parameters
+	updateableImage := false
+	if app.Spec.Source.Kustomize != nil {
+		for _, img := range app.Spec.Source.Kustomize.Images {
+			if strings.Contains(string(img), imageName) {
+				updateableImage = true
+				break
+			}
 		}
 	}
-	for _, param := range app.Spec.Source.Helm.Parameters {
-		if strings.Contains(param.Value, imageName) {
-			return true
+	if app.Spec.Source.Helm != nil {
+		for _, param := range app.Spec.Source.Helm.Parameters {
+			if strings.Contains(param.Value, imageName) {
+				updateableImage = true
+				break
+			}
 		}
 	}
+
+	if updateableImage {
+		log.Debugf("Found matching image %s in application %s", imageName, app.Name)
+		return true
+	}
+
 	return false
 }
+
 func updateApplicationImage(cfg *ImageUpdaterConfig, app Application, imageName, tagName string) error {
 	// Update the image in the application's spec
 	for i, source := range app.Spec.Source.Kustomize.Images {
