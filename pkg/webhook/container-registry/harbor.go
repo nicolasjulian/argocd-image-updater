@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook/types"
@@ -70,8 +71,27 @@ func (h *Harbor) Parse(r *http.Request) (*types.WebhookEvent, error) {
 		return nil, fmt.Errorf("no resources in webhook payload")
 	}
 
+	// Extract base repository name without tag
+	repository := payload.EventData.Repository.Name
+	if strings.Contains(repository, ":") {
+		repository = strings.Split(repository, ":")[0]
+	}
+
+	log.Debugf("Processing repository: %s (without tag)", repository)
+
+	// Update resource processing to ignore tags
+	var resourceRef string
+	for _, resource := range payload.EventData.Resources {
+		// Strip tag from resource reference if present
+		resourceRef = resource.ResourceURL
+		if strings.Contains(resourceRef, ":") {
+			resourceRef = strings.Split(resourceRef, ":")[0]
+		}
+		log.Debugf("Comparing resource: %s with repository: %s", resourceRef, repository)
+	}
+
 	return &types.WebhookEvent{
-		ImageName: payload.EventData.Repository.Name,
+		ImageName: resourceRef,
 		TagName:   payload.EventData.Resources[0].Tag,
 		CreatedAt: time.Unix(payload.OccurAt, 0),
 		Digest:    payload.EventData.Resources[0].Digest,

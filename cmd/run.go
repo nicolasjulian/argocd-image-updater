@@ -44,7 +44,10 @@ type Application struct {
 	Namespace string
 	Name      string
 	Spec      v1alpha1.ApplicationSpec
+	Metadata  v1alpha1.Application
 }
+
+const ImageUpdaterAnnotation = "argocd-image-updater.argoproj.io/image-list"
 
 // newRunCommand implements "run" command
 func newRunCommand() *cobra.Command {
@@ -487,10 +490,33 @@ func getApplications(cfg *ImageUpdaterConfig) ([]Application, error) {
 }
 
 func usesImage(app Application, imageName string) bool {
-	log.Debugf("Checking if application %s uses image: %s", app.Name, imageName)
+	log.Debugf("=== Checking image usage for application: %s ===", app.Name)
+
+	// Check image-list annotation first
+	if annotations := app.Metadata.Annotations; annotations != nil {
+		if imageList, ok := annotations[ImageUpdaterAnnotation]; ok {
+			log.Debugf("Found image-list annotation: %s", imageList)
+
+			// Use ParseImageList to properly parse image specifications
+			images := argocd.GetImagesFromApplication(&app.Metadata)
+
+			for alias, img := range images {
+				log.Debugf("Checking alias=%d with configured image=%s against target=%s",
+					alias, img.ImageName, imageName)
+
+				if img.ImageName == imageName {
+					log.Debugf("Result: TRUE - Image %s matches configuration for alias %d",
+						imageName, alias)
+					return true
+				}
+			}
+		}
+	}
+
+	log.Debugf("No matching image found in annotations, checking source configuration...")
 
 	if app.Spec.Source == nil {
-		log.Debugf("Application %s has no source specification", app.Name)
+		log.Debugf("Result: FALSE - Application %s has no source specification", app.Name)
 		return false
 	}
 
@@ -519,6 +545,7 @@ func usesImage(app Application, imageName string) bool {
 		return true
 	}
 
+	log.Debugf("Result: FALSE - Image %s not found in application %s", imageName, app.Name)
 	return false
 }
 
