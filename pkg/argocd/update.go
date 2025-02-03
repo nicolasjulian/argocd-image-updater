@@ -14,7 +14,6 @@ import (
 	"github.com/argoproj-labs/argocd-image-updater/ext/git"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/common"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/kube"
-	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook/types"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/image"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/log"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/registry"
@@ -33,6 +32,8 @@ type ImageUpdaterResult struct {
 	NumImagesConsidered      int
 	NumSkipped               int
 	NumErrors                int
+	UpdatedApplications      []string
+	FailedUpdates            map[string]error
 }
 
 type UpdateConfiguration struct {
@@ -50,6 +51,8 @@ type UpdateConfiguration struct {
 	DisableKubeEvents      bool
 	IgnorePlatforms        bool
 	GitCreds               git.CredsStore
+	TargetImage            string
+	TargetTag              string
 	WebhookPort            int
 }
 
@@ -775,160 +778,4 @@ type Application struct {
 	Namespace string
 	Name      string
 	Spec      *v1alpha1.ApplicationSpec
-}
-
-// runImageUpdaterForSpecificImage updates the image of applications based on the webhook event
-func runImageUpdaterForSpecificImage(cfg *UpdateConfiguration, event types.WebhookEvent) (*ImageUpdaterResult, error) {
-	result := &ImageUpdaterResult{}
-
-	// Fetch the list of applications
-	apps, err := getApplications(cfg)
-	if err != nil {
-		return result, fmt.Errorf("failed to get applications: %v", err)
-	}
-
-	// Iterate over the applications and update only those that use the specific image
-	for _, app := range apps {
-		if usesImage(app, event.ImageName) {
-			log.Infof("Processing application %s/%s", app.Namespace, app.Name)
-			err := updateApplicationImage(cfg, app, event.ImageName, event.TagName)
-			if err != nil {
-				log.Errorf("Failed to update application %s/%s: %v", app.Namespace, app.Name, err)
-				result.NumErrors++
-			} else {
-				result.NumImagesUpdated++
-			}
-			result.NumApplicationsProcessed++
-		}
-	}
-
-	return result, nil
-}
-
-func getApplications(cfg *UpdateConfiguration) ([]Application, error) {
-	// Get applications directly from ArgoCD client
-	apps, err := cfg.ArgoClient.ListApplications("") // Empty string for all namespaces
-	if err != nil {
-		return nil, fmt.Errorf("failed to list Argo CD applications: %v", err)
-	}
-
-	var result []Application
-	for _, app := range apps {
-		result = append(result, Application{
-			Namespace: app.Namespace,
-			Name:      app.Name,
-			Spec:      &app.Spec,
-		})
-	}
-
-	return result, nil
-}
-
-func usesImage(app Application, imageName string) bool {
-	if app.Spec.Source.Kustomize != nil {
-		for _, img := range app.Spec.Source.Kustomize.Images {
-			// KustomizeImage is string type, direct comparison
-			if strings.Contains(string(img), imageName) {
-				return true
-			}
-		}
-	}
-
-	// Check Helm parameters as fallback
-	if app.Spec.Source.Helm != nil {
-		for _, param := range app.Spec.Source.Helm.Parameters {
-			if strings.Contains(param.Value, imageName) {
-				return true
-			}
-		}
-	}
-	return false
-}
-func updateApplicationImage(cfg *UpdateConfiguration, app Application, imageName, tagName string) error {
-	if app.Spec.Source.Kustomize != nil {
-		modified := false
-		for i, img := range app.Spec.Source.Kustomize.Images {
-			if strings.Contains(string(img), imageName) {
-				// Update only matching image
-				app.Spec.Source.Kustomize.Images[i] = v1alpha1.KustomizeImage(fmt.Sprintf("%s:%s", imageName, tagName))
-				modified = true
-			}
-		}
-
-		if modified {
-			// Create UpdateSpecRequest
-			updateReq := &application.ApplicationUpdateSpecRequest{
-				Name: &app.Name,
-				Spec: app.Spec,
-			}
-
-			// Call UpdateSpec with correct arguments
-			updatedSpec, err := cfg.ArgoClient.UpdateSpec(context.Background(), updateReq)
-			if err != nil {
-				return fmt.Errorf("failed to update application %s: %v", app.Name, err)
-			}
-			if updatedSpec == nil {
-				return fmt.Errorf("failed to update application %s: no spec returned", app.Name)
-			}
-		}
-	}
-	return nil
-}
-
-func (cfg *UpdateConfiguration) RunImageUpdaterForSpecificImage(event types.WebhookEvent) (*ImageUpdaterResult, error) {
-	result := &ImageUpdaterResult{}
-
-	// Get only applications using this image
-	apps, err := getApplications(cfg)
-	if err != nil {
-		return result, err
-	}
-
-	for _, app := range apps {
-		if usesImage(app, event.ImageName) {
-			err := updateApplicationImage(cfg, app, event.ImageName, event.TagName)
-			if err != nil {
-				log.Errorf("Failed to update application %s: %v", app.Name, err)
-				result.NumErrors++
-				continue
-			}
-			result.NumImagesUpdated++
-			result.NumApplicationsProcessed++
-		}
-	}
-
-	return result, nil
-}
-
-func hasImage(app *v1alpha1.Application, imageName string) bool {
-	if app.Spec.Source.Kustomize != nil {
-		for _, img := range app.Spec.Source.Kustomize.Images {
-			// KustomizeImage is string type, direct comparison
-			if strings.Contains(string(img), imageName) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func updateImage(cfg *UpdateConfiguration, app *v1alpha1.Application, imageName, tagName string) error {
-	if app.Spec.Source.Kustomize != nil {
-		for i, img := range app.Spec.Source.Kustomize.Images {
-			if strings.Contains(string(img), imageName) {
-				// Update using string format for KustomizeImage
-				app.Spec.Source.Kustomize.Images[i] = v1alpha1.KustomizeImage(fmt.Sprintf("%s:%s", imageName, tagName))
-			}
-		}
-	}
-
-	// Use UpdateSpec directly from ArgoClient
-	_, err := cfg.ArgoClient.UpdateSpec(
-		context.Background(),
-		&application.ApplicationUpdateSpecRequest{
-			Name: &app.Name,
-			Spec: &app.Spec,
-		},
-	)
-	return err
 }

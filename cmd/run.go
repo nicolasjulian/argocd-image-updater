@@ -16,11 +16,9 @@ import (
 	"github.com/argoproj-labs/argocd-image-updater/pkg/metrics"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/version"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook"
-	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook/types"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/env"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/log"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/registry"
-	"github.com/argoproj/argo-cd/v2/pkg/apiclient/application"
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 
 	"github.com/argoproj/argo-cd/v2/reposerver/askpass"
@@ -48,6 +46,13 @@ type Application struct {
 }
 
 const ImageUpdaterAnnotation = "argocd-image-updater.argoproj.io/image-list"
+
+// Add WebhookConfig struct
+type WebhookConfig struct {
+	ImageName string
+	TagName   string
+	IsWebhook bool
+}
 
 // newRunCommand implements "run" command
 func newRunCommand() *cobra.Command {
@@ -139,7 +144,14 @@ func newRunCommand() *cobra.Command {
 						case event := <-webhook.GetWebhookEventChan():
 							log.Infof("Received webhook event: registry=%s, image=%s, tag=%s",
 								event.RegistryPrefix, event.ImageName, event.TagName)
-							result, err := cfg.RunImageUpdaterForSpecificImage(event)
+
+							webhookCfg := &WebhookConfig{
+								ImageName: event.ImageName,
+								TagName:   event.TagName,
+								IsWebhook: true,
+							}
+
+							result, err := runImageUpdater(cfg, false, webhookCfg)
 							if err != nil {
 								log.Errorf("Error processing webhook: %v", err)
 							} else {
@@ -244,7 +256,7 @@ func newRunCommand() *cobra.Command {
 					return nil
 				default:
 					if lastRun.IsZero() || time.Since(lastRun) > cfg.CheckInterval {
-						result, err := runImageUpdater(cfg, false)
+						result, err := runImageUpdater(cfg, false, nil)
 						if err != nil {
 							log.Errorf("Error: %v", err)
 						} else {
@@ -301,7 +313,7 @@ func newRunCommand() *cobra.Command {
 }
 
 // Main loop for argocd-image-controller
-func runImageUpdater(cfg *ImageUpdaterConfig, warmUp bool) (argocd.ImageUpdaterResult, error) {
+func runImageUpdater(cfg *ImageUpdaterConfig, warmUp bool, webhookCfg *WebhookConfig) (argocd.ImageUpdaterResult, error) {
 	result := argocd.ImageUpdaterResult{}
 	var err error
 	var argoClient argocd.ArgoCD
@@ -344,6 +356,32 @@ func runImageUpdater(cfg *ImageUpdaterConfig, warmUp bool) (argocd.ImageUpdaterR
 		log.Infof("Starting image update cycle, considering %d annotated application(s) for update", len(appList))
 	}
 
+	// If webhook mode, filter only applications using specific image
+	if webhookCfg != nil && webhookCfg.IsWebhook {
+		log.Infof("Webhook mode: filtering applications for image: %s", webhookCfg.ImageName)
+		filteredApps := make(map[string]argocd.ApplicationImages)
+
+		for appName, app := range appList {
+			log.Debugf("Checking application '%s' for image matches", appName)
+
+			for _, img := range app.Images {
+				log.Debugf("-> Comparing application image '%s' with webhook image '%s'", img.ImageName, webhookCfg.ImageName)
+
+				if strings.Contains(img.ImageName, webhookCfg.ImageName) {
+					log.Infof("✓ Found matching image in application '%s': %s matches %s",
+						appName, img.ImageName, webhookCfg.ImageName)
+					filteredApps[appName] = app
+					break
+				} else {
+					log.Debugf("✗ Image does not match: %s != %s", img.ImageName, webhookCfg.ImageName)
+				}
+			}
+		}
+
+		log.Infof("Filtered %d applications down to %d that use image %s",
+			len(appList), len(filteredApps), webhookCfg.ImageName)
+		appList = filteredApps
+	}
 	syncState := argocd.NewSyncIterationState()
 
 	// Allow a maximum of MaxConcurrency number of goroutines to exist at the
@@ -388,6 +426,13 @@ func runImageUpdater(cfg *ImageUpdaterConfig, warmUp bool) (argocd.ImageUpdaterR
 				DisableKubeEvents:      cfg.DisableKubeEvents,
 				GitCreds:               cfg.GitCreds,
 			}
+
+			// If webhook mode, set specific image and tag
+			if webhookCfg != nil && webhookCfg.IsWebhook {
+				upconf.TargetImage = webhookCfg.ImageName
+				upconf.TargetTag = webhookCfg.TagName
+			}
+
 			res := argocd.UpdateApplication(upconf, syncState)
 			result.NumApplicationsProcessed += 1
 			result.NumErrors += res.NumErrors
@@ -414,7 +459,7 @@ func runImageUpdater(cfg *ImageUpdaterConfig, warmUp bool) (argocd.ImageUpdaterR
 // of 1, i.e. sequential processing.
 func warmupImageCache(cfg *ImageUpdaterConfig) error {
 	log.Infof("Warming up image cache")
-	_, err := runImageUpdater(cfg, true)
+	_, err := runImageUpdater(cfg, true, nil)
 	if err != nil {
 		return nil
 	}
@@ -427,150 +472,6 @@ func warmupImageCache(cfg *ImageUpdaterConfig) error {
 		}
 	}
 	log.Infof("Finished cache warm-up, pre-loaded %d meta data entries from %d registries", entries, len(eps))
-	return nil
-}
-
-func (cfg *ImageUpdaterConfig) RunImageUpdaterForSpecificImage(event types.WebhookEvent) (*ImageUpdaterResult, error) {
-	result := &ImageUpdaterResult{
-		UpdatedApplications: make([]string, 0),
-	}
-
-	// Validate webhook event
-	if event.ImageName == "" || event.RegistryPrefix == "" {
-		return result, fmt.Errorf("invalid webhook event: missing image or registry")
-	}
-
-	// Get all applications
-	apps, err := getApplications(cfg)
-	if err != nil {
-		return result, fmt.Errorf("failed to get applications: %v", err)
-	}
-
-	// Check each application for image match
-	for _, app := range apps {
-		// Use usesImage to check if app uses this image
-		if usesImage(app, event.ImageName) {
-			log.Debugf("Found matching application: %s", app.Name)
-
-			// Update the application with new image
-			err := updateApplicationImage(cfg, app, event.ImageName, event.TagName)
-			if err != nil {
-				log.Errorf("Failed to update application %s: %v", app.Name, err)
-				continue
-			}
-
-			result.UpdatedApplications = append(result.UpdatedApplications, app.Name)
-		}
-	}
-
-	return result, nil
-}
-
-func getApplications(cfg *ImageUpdaterConfig) ([]Application, error) {
-	log.Infof("Fetching applications with label: %s", cfg.AppLabel)
-	appList, err := cfg.ArgoClient.ListApplications(cfg.AppLabel)
-	if err != nil {
-		log.Errorf("Failed to list applications: %v", err)
-		return nil, fmt.Errorf("failed to list Argo CD applications: %v", err)
-	}
-	log.Infof("Found %d total applications before filtering", len(appList))
-
-	var apps []Application
-	for _, app := range appList {
-		log.Debugf("Processing application: %s in namespace %s", app.Name, app.Namespace)
-		apps = append(apps, Application{
-			Namespace: app.Namespace,
-			Name:      app.Name,
-			Spec:      app.Spec,
-		})
-	}
-
-	log.Infof("Successfully processed %d applications", len(apps))
-	return apps, nil
-}
-
-func usesImage(app Application, imageName string) bool {
-	log.Debugf("=== Checking image usage for application: %s ===", app.Name)
-
-	// Check image-list annotation first
-	if annotations := app.Metadata.Annotations; annotations != nil {
-		if imageList, ok := annotations[ImageUpdaterAnnotation]; ok {
-			log.Debugf("Found image-list annotation: %s", imageList)
-
-			// Use ParseImageList to properly parse image specifications
-			images := argocd.GetImagesFromApplication(&app.Metadata)
-
-			for alias, img := range images {
-				log.Debugf("Checking alias=%d with configured image=%s against target=%s",
-					alias, img.ImageName, imageName)
-
-				if img.ImageName == imageName {
-					log.Debugf("Result: TRUE - Image %s matches configuration for alias %d",
-						imageName, alias)
-					return true
-				}
-			}
-		}
-	}
-
-	log.Debugf("No matching image found in annotations, checking source configuration...")
-
-	if app.Spec.Source == nil {
-		log.Debugf("Result: FALSE - Application %s has no source specification", app.Name)
-		return false
-	}
-
-	// Since we can't directly check images, we'll look for the image name in kustomize and helm parameters
-	updateableImage := false
-	if app.Spec.Source.Kustomize != nil {
-		log.Debugf("Checking Kustomize configuration for application %s", app.Name)
-		for _, img := range app.Spec.Source.Kustomize.Images {
-			if strings.Contains(string(img), imageName) {
-				updateableImage = true
-				break
-			}
-		}
-	}
-	if app.Spec.Source.Helm != nil {
-		for _, param := range app.Spec.Source.Helm.Parameters {
-			if strings.Contains(param.Value, imageName) {
-				updateableImage = true
-				break
-			}
-		}
-	}
-
-	if updateableImage {
-		log.Debugf("Found matching image %s in application %s", imageName, app.Name)
-		return true
-	}
-
-	log.Debugf("Result: FALSE - Image %s not found in application %s", imageName, app.Name)
-	return false
-}
-
-func updateApplicationImage(cfg *ImageUpdaterConfig, app Application, imageName, tagName string) error {
-	// Update the image in the application's spec
-	for i, source := range app.Spec.Source.Kustomize.Images {
-		if source.Match(v1alpha1.KustomizeImage(imageName)) {
-			app.Spec.Source.Kustomize.Images[i] = v1alpha1.KustomizeImage(fmt.Sprintf("%s:%s", imageName, tagName))
-		}
-	}
-	for i, param := range app.Spec.Source.Helm.Parameters {
-		if strings.Contains(param.Value, imageName) {
-			app.Spec.Source.Helm.Parameters[i].Value = fmt.Sprintf("%s:%s", imageName, tagName)
-		}
-	}
-
-	updateReq := &application.ApplicationUpdateSpecRequest{
-		Name: &app.Name,
-		Spec: &app.Spec,
-	}
-	_, err := cfg.ArgoClient.UpdateSpec(context.Background(), updateReq)
-	if err != nil {
-		return fmt.Errorf("failed to update Argo CD application spec: %v", err)
-	}
-
 	return nil
 }
 
