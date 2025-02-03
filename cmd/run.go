@@ -16,16 +16,34 @@ import (
 	"github.com/argoproj-labs/argocd-image-updater/pkg/metrics"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/version"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook"
+	"github.com/argoproj-labs/argocd-image-updater/pkg/webhook/types"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/env"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/log"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/registry"
+	"github.com/argoproj/argo-cd/v2/pkg/apiclient/application"
 
+	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	"github.com/argoproj/argo-cd/v2/reposerver/askpass"
 
 	"github.com/spf13/cobra"
 
 	"golang.org/x/sync/semaphore"
 )
+
+type ImageUpdaterResult struct {
+	NumApplicationsProcessed int
+	NumImagesFound           int
+	NumImagesUpdated         int
+	NumImagesConsidered      int
+	NumSkipped               int
+	NumErrors                int
+}
+
+type Application struct {
+	Namespace string
+	Name      string
+	Spec      v1alpha1.ApplicationSpec
+}
 
 // newRunCommand implements "run" command
 func newRunCommand() *cobra.Command {
@@ -104,33 +122,32 @@ func newRunCommand() *cobra.Command {
 				}
 			}
 
-            if cfg.WebhookPort > 0 {
-                log.Infof("Starting webhook server on TCP port=%d", cfg.WebhookPort)
-                whErrCh := webhook.StartRegistryHookServer(cfg.WebhookPort)
-                go func() {
-                    for {
-                        select {
-                        case err := <-whErrCh:
-                            if err != nil {
-                                log.Errorf("Webhook server error: %v", err)
-                            }
-                        case event := <-webhook.GetWebhookEventChan():
-                            log.Infof("Received webhook event: registry=%s, image=%s, tag=%s",
-                                event.RegistryPrefix, event.ImageName, event.TagName)
-                            result, err := argocd.runImageUpdaterForSpecificImage(cfg, event)
-                            if err != nil {
-                                log.Errorf("Error processing webhook: %v", err)
-                            } else {
-                                log.Infof("Webhook processing results: applications=%d images_considered=%d images_updated=%d errors=%d",
-                                    result.NumApplicationsProcessed,
-                                    result.NumImagesConsidered,
-                                    result.NumImagesUpdated,
-                                    result.NumErrors)
-                            }
-                        }
-                    }
-                }()
-            }
+			if cfg.WebhookPort > 0 {
+				log.Infof("Starting webhook server on TCP port=%d", cfg.WebhookPort)
+				whErrCh := webhook.StartRegistryHookServer(cfg.WebhookPort)
+				go func() {
+					for {
+						select {
+						case err := <-whErrCh:
+							if err != nil {
+								log.Errorf("Webhook server error: %v", err)
+							}
+						case event := <-webhook.GetWebhookEventChan():
+							log.Infof("Received webhook event: registry=%s, image=%s, tag=%s",
+								event.RegistryPrefix, event.ImageName, event.TagName)
+							result, err := cfg.RunImageUpdaterForSpecificImage(event)
+							if err != nil {
+								log.Errorf("Error processing webhook: %v", err)
+							} else {
+								log.Infof("Webhook processing results: applications=%d images_updated=%d errors=%d",
+									result.NumApplicationsProcessed,
+									result.NumImagesUpdated,
+									result.NumErrors)
+							}
+						}
+					}
+				}()
+			}
 
 			if cfg.CheckInterval > 0 && cfg.CheckInterval < 60*time.Second {
 				log.Warnf("Check interval is very low - it is not recommended to run below 1m0s")
@@ -406,4 +423,96 @@ func warmupImageCache(cfg *ImageUpdaterConfig) error {
 	}
 	log.Infof("Finished cache warm-up, pre-loaded %d meta data entries from %d registries", entries, len(eps))
 	return nil
+}
+
+func (cfg *ImageUpdaterConfig) RunImageUpdaterForSpecificImage(event types.WebhookEvent) (*ImageUpdaterResult, error) {
+	result := &ImageUpdaterResult{}
+
+	// Fetch the list of applications
+	apps, err := getApplications(cfg)
+	if err != nil {
+		return result, fmt.Errorf("failed to get applications: %v", err)
+	}
+
+	// Iterate over the applications and update only those that use the specific image
+	for _, app := range apps {
+		if usesImage(app, event.ImageName) {
+			log.Infof("Processing application %s/%s", app.Namespace, app.Name)
+			err := updateApplicationImage(cfg, app, event.ImageName, event.TagName)
+			if err != nil {
+				log.Errorf("Failed to update application %s/%s: %v", app.Namespace, app.Name, err)
+				result.NumErrors++
+			} else {
+				result.NumImagesUpdated++
+			}
+			result.NumApplicationsProcessed++
+		}
+	}
+
+	return result, nil
+}
+
+func getApplications(cfg *ImageUpdaterConfig) ([]Application, error) {
+	appList, err := cfg.ArgoClient.ListApplications(cfg.AppLabel)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list Argo CD applications: %v", err)
+	}
+
+	var apps []Application
+	for _, app := range appList {
+		apps = append(apps, Application{
+			Namespace: app.Namespace,
+			Name:      app.Name,
+			Spec:      app.Spec,
+		})
+	}
+
+	return apps, nil
+}
+
+func usesImage(app Application, imageName string) bool {
+	for _, source := range app.Spec.Source.Kustomize.Images {
+		if source.Match(v1alpha1.KustomizeImage(imageName)) {
+			return true
+		}
+	}
+	for _, param := range app.Spec.Source.Helm.Parameters {
+		if strings.Contains(param.Value, imageName) {
+			return true
+		}
+	}
+	return false
+}
+func updateApplicationImage(cfg *ImageUpdaterConfig, app Application, imageName, tagName string) error {
+	// Update the image in the application's spec
+	for i, source := range app.Spec.Source.Kustomize.Images {
+		if source.Match(v1alpha1.KustomizeImage(imageName)) {
+			app.Spec.Source.Kustomize.Images[i] = v1alpha1.KustomizeImage(fmt.Sprintf("%s:%s", imageName, tagName))
+		}
+	}
+	for i, param := range app.Spec.Source.Helm.Parameters {
+		if strings.Contains(param.Value, imageName) {
+			app.Spec.Source.Helm.Parameters[i].Value = fmt.Sprintf("%s:%s", imageName, tagName)
+		}
+	}
+
+	updateReq := &application.ApplicationUpdateSpecRequest{
+		Name: &app.Name,
+		Spec: &app.Spec,
+	}
+	_, err := cfg.ArgoClient.UpdateSpec(context.Background(), updateReq)
+	if err != nil {
+		return fmt.Errorf("failed to update Argo CD application spec: %v", err)
+	}
+
+	return nil
+}
+
+func main() {
+	rootCmd := &cobra.Command{Use: "argocd-image-updater"}
+	rootCmd.AddCommand(newRunCommand())
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"text/template"
 	"time"
 
@@ -53,37 +52,15 @@ type ImageUpdaterConfig struct {
 	GitCreds               git.CredsStore
 }
 
-// newRootCommand implements the root command of argocd-image-updater
-func newRootCommand() error {
-	var rootCmd = &cobra.Command{
+func newRootCommand() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "argocd-image-updater",
-		Short: "Automatically update container images with ArgoCD",
+		Short: "Automatically update container images in Argo CD applications",
+		Run: func(cmd *cobra.Command, args []string) {
+			cmd.HelpFunc()(cmd, args)
+		},
 	}
-	rootCmd.AddCommand(newRunCommand())
-	rootCmd.AddCommand(newVersionCommand())
-	rootCmd.AddCommand(newTestCommand())
-	rootCmd.AddCommand(newTemplateCommand())
-	err := rootCmd.Execute()
-	return err
-}
 
-func main() {
-	var err error
-
-	// FIXME(jannfis):
-	// This is a workaround for supporting the Argo CD askpass implementation.
-	// When the environment ARGOCD_BINARY_NAME is set to argocd-git-ask-pass,
-	// we divert from the main path of execution to become a git credentials
-	// helper.
-	cmdName := os.Getenv("ARGOCD_BINARY_NAME")
-	if cmdName == "argocd-git-ask-pass" {
-		cmd := NewAskPassCommand()
-		err = cmd.Execute()
-	} else {
-		err = newRootCommand()
-	}
-	if err != nil {
-		os.Exit(1)
-	}
-	os.Exit(0)
+	cmd.AddCommand(newRunCommand())
+	return cmd
 }
