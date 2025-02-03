@@ -316,6 +316,7 @@ func runImageUpdater(cfg *ImageUpdaterConfig, warmUp bool) (argocd.ImageUpdaterR
 	cfg.ArgoClient = argoClient
 
 	apps, err := cfg.ArgoClient.ListApplications(cfg.AppLabel)
+	log.Debugf("Found %d total applications", len(apps))
 	if err != nil {
 		log.WithContext().
 			AddField("argocd_server", cfg.ClientOpts.ServerAddr).
@@ -463,13 +464,17 @@ func (cfg *ImageUpdaterConfig) RunImageUpdaterForSpecificImage(event types.Webho
 }
 
 func getApplications(cfg *ImageUpdaterConfig) ([]Application, error) {
+	log.Infof("Fetching applications with label: %s", cfg.AppLabel)
 	appList, err := cfg.ArgoClient.ListApplications(cfg.AppLabel)
 	if err != nil {
+		log.Errorf("Failed to list applications: %v", err)
 		return nil, fmt.Errorf("failed to list Argo CD applications: %v", err)
 	}
+	log.Infof("Found %d total applications before filtering", len(appList))
 
 	var apps []Application
 	for _, app := range appList {
+		log.Debugf("Processing application: %s in namespace %s", app.Name, app.Namespace)
 		apps = append(apps, Application{
 			Namespace: app.Namespace,
 			Name:      app.Name,
@@ -477,17 +482,22 @@ func getApplications(cfg *ImageUpdaterConfig) ([]Application, error) {
 		})
 	}
 
+	log.Infof("Successfully processed %d applications", len(apps))
 	return apps, nil
 }
 
 func usesImage(app Application, imageName string) bool {
+	log.Debugf("Checking if application %s uses image: %s", app.Name, imageName)
+
 	if app.Spec.Source == nil {
+		log.Debugf("Application %s has no source specification", app.Name)
 		return false
 	}
 
 	// Since we can't directly check images, we'll look for the image name in kustomize and helm parameters
 	updateableImage := false
 	if app.Spec.Source.Kustomize != nil {
+		log.Debugf("Checking Kustomize configuration for application %s", app.Name)
 		for _, img := range app.Spec.Source.Kustomize.Images {
 			if strings.Contains(string(img), imageName) {
 				updateableImage = true
