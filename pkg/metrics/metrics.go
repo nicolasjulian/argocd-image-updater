@@ -26,6 +26,7 @@ type ApplicationMetrics struct {
 	imagesWatchedTotal       *prometheus.GaugeVec
 	imagesUpdatedTotal       *prometheus.CounterVec
 	imagesUpdatedErrorsTotal *prometheus.CounterVec
+	applicationImageInfo     *prometheus.GaugeVec
 }
 
 // ClientMetrics stores metrics for K8s and ArgoCD clients
@@ -86,6 +87,11 @@ func NewApplicationsMetrics() *ApplicationMetrics {
 		Name: "argocd_image_updater_images_errors_total",
 		Help: "Number of errors reported by Argo CD Image Updater",
 	}, []string{"application"})
+
+	metrics.applicationImageInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "argocd_image_updater_application_image_info",
+		Help: "Information about images used in applications including registry and tag details",
+	}, []string{"application", "image", "registry", "tag"})
 
 	return metrics
 }
@@ -158,6 +164,11 @@ func (apm *ApplicationMetrics) IncreaseImageUpdate(application string, by int) {
 // IncreaseUpdateErrors increases the number of errors for given application occurred during update process
 func (apm *ApplicationMetrics) IncreaseUpdateErrors(application string, by int) {
 	apm.imagesUpdatedErrorsTotal.WithLabelValues(application).Add(float64(by))
+}
+
+// SetApplicationImageInfo sets the application image info for given application, image, registry, and tag
+func (apm *ApplicationMetrics) SetApplicationImageInfo(application, image, registry, tag string) {
+	apm.applicationImageInfo.WithLabelValues(application, image, registry, tag).Set(1)
 }
 
 // IncreaseArgoCDClientRequest increases the number of Argo CD API requests for given server

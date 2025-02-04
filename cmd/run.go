@@ -351,7 +351,29 @@ func runImageUpdater(cfg *ImageUpdaterConfig, warmUp bool, webhookCfg *WebhookCo
 	}
 
 	metrics.Applications().SetNumberOfApplications(len(appList))
+	for appName, app := range appList {
+		// Get images from application's annotations
+		appImages := argocd.GetImagesFromApplication(&app.Application)
 
+		for _, img := range appImages {
+			// Parse registry and image from ImageName
+			registry := img.RegistryURL
+			if registry == "" {
+				registry = "default"
+			}
+
+			// Set metric for each image
+			metrics.Applications().SetApplicationImageInfo(
+				appName,
+				img.ImageName,
+				registry,
+				img.ImageTag.String(),
+			)
+
+			log.Debugf("Set image metric - App: %s, Registry: %s, Image: %s, Tag: %s",
+				appName, registry, img.ImageName, img.ImageTag)
+		}
+	}
 	if !warmUp {
 		log.Infof("Starting image update cycle, considering %d annotated application(s) for update", len(appList))
 	}
