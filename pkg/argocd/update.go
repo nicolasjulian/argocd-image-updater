@@ -14,6 +14,7 @@ import (
 	"github.com/argoproj-labs/argocd-image-updater/ext/git"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/common"
 	"github.com/argoproj-labs/argocd-image-updater/pkg/kube"
+	"github.com/argoproj-labs/argocd-image-updater/pkg/metrics"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/image"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/log"
 	"github.com/argoproj-labs/argocd-image-updater/registry-scanner/pkg/registry"
@@ -420,7 +421,43 @@ func setAppImage(app *v1alpha1.Application, img *image.ContainerImage) error {
 	} else {
 		err = fmt.Errorf("could not update application %s - neither Helm nor Kustomize application", app)
 	}
+	// Update metrics if image update was successful
+	if err == nil {
+		updateImageMetrics(app, img)
+	}
 	return err
+}
+
+func updateImageMetrics(app *v1alpha1.Application, img *image.ContainerImage) {
+	// Delete existing metrics for this application
+	metrics.Applications().DeleteApplicationImageInfo(app.Name)
+
+	// Extract registry and image parts
+	registry := img.RegistryURL
+	if registry == "" {
+		registry = "default"
+	}
+
+	// Parse image name to get full path
+	imageParts := strings.Split(img.ImageName, "/")
+	var imagePath string
+	if len(imageParts) > 1 {
+		// For images like "private/sleeper", keep full path
+		imagePath = img.ImageName
+	} else {
+		imagePath = img.ImageName
+	}
+
+	// Set new metric
+	metrics.Applications().SetApplicationImageInfo(
+		app.Name,
+		imagePath,
+		registry,
+		img.ImageTag.String(),
+	)
+
+	log.Debugf("Updated image metrics for app=%s registry=%s image=%s tag=%s",
+		app.Name, registry, imagePath, img.ImageTag.String())
 }
 
 // marshalParamsOverride marshals the parameter overrides of a given application

@@ -123,6 +123,11 @@ func NewClientMetrics() *ClientMetrics {
 	return metrics
 }
 
+// Add method to delete existing metrics
+func (m *ApplicationMetrics) DeleteApplicationImageInfo(application string) {
+	m.applicationImageInfo.DeletePartialMatch(prometheus.Labels{"application": application})
+}
+
 // Endpoint returns the global EndpointMetrics object
 func Endpoint() *EndpointMetrics {
 	return epm
