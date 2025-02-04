@@ -367,7 +367,7 @@ func runImageUpdater(cfg *ImageUpdaterConfig, warmUp bool, webhookCfg *WebhookCo
 			for _, img := range app.Images {
 				log.Debugf("-> Comparing application image '%s' with webhook image '%s'", img.ImageName, webhookCfg.ImageName)
 
-				if strings.Contains(img.ImageName, webhookCfg.ImageName) {
+				if img.ImageName == webhookCfg.ImageName {
 					log.Infof("✓ Found matching image in application '%s': %s matches %s",
 						appName, img.ImageName, webhookCfg.ImageName)
 					filteredApps[appName] = app
