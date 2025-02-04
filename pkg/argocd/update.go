@@ -429,8 +429,6 @@ func setAppImage(app *v1alpha1.Application, img *image.ContainerImage) error {
 }
 
 func updateImageMetrics(app *v1alpha1.Application, img *image.ContainerImage) {
-	// Delete existing metrics for this application
-	metrics.Applications().DeleteApplicationImageInfo(app.Name)
 
 	// Extract registry and image parts
 	registry := img.RegistryURL
@@ -447,6 +445,9 @@ func updateImageMetrics(app *v1alpha1.Application, img *image.ContainerImage) {
 	} else {
 		imagePath = img.ImageName
 	}
+
+	// Delete existing metrics for this application
+	metrics.Applications().DeleteApplicationImageInfo(app.Name, imagePath, registry)
 
 	// Set new metric
 	metrics.Applications().SetApplicationImageInfo(
