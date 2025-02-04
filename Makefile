@@ -168,4 +168,4 @@ local-image-test:
 	ARGOCD_TOKEN=$(ARGOCD_TOKEN) \
 	IMAGE_UPDATER_LOGLEVEL=trace \
 	WEBHOOK_HARBOR_SECRET=029830ujsnkhs9jeoajsdiasodojius98qwejowqueo9wej \
-	./dist/argocd-image-updater run --webhook-port 6969 --registries-conf-path ~/registries.conf --interval=60m0s
+	./dist/argocd-image-updater run --webhook-port 6969 --registries-conf-path ~/registries.conf --interval=60m0s --max-concurrency 20

@@ -52,21 +52,24 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		 // Extract registry prefix from the URL path
-        parts := strings.Split(r.URL.Path, "/")
-        if len(parts) < 4 {
-            log.Errorf("Invalid URL path: %s", r.URL.Path)
-            w.WriteHeader(http.StatusBadRequest)
-            return
-        }
-        regPrefix := parts[3]
-        event.RegistryPrefix = regPrefix
+		// Extract registry prefix from the URL path
+		parts := strings.Split(r.URL.Path, "/")
+		if len(parts) < 4 {
+			log.Errorf("Invalid URL path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		regPrefix := parts[3]
+		event.RegistryPrefix = regPrefix
 
-        log.Infof("Received webhook event: registry=%s, image=%s, tag=%s", regPrefix, event.ImageName, event.TagName)
+		log.Infof("Received webhook event: registry=%s, image=%s, tag=%s", regPrefix, event.ImageName, event.TagName)
 
 		// Send the event to the channel for processing
 		webhookEventCh <- *event
+
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "success"}`))
 		return
 	} else {
 		log.Errorf("Authorization header not found")
